@@ -1,0 +1,101 @@
+
+// Select images by predefined dates
+var beforeStart = '2019-03-01';
+var beforeEnd = '2019-03-20';
+var afterStart = '2019-03-21';
+var afterEnd = '2019-04-15';
+Map.addLayer(geometry);
+
+var filtered= s1
+  .filter(ee.Filter.eq('instrumentMode','IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING')) 
+  .filter(ee.Filter.eq('resolution_meters',10))
+  .filterBounds(geometry)
+  .select(['VH']);
+print(filtered.first());
+
+var beforeCollection = filtered.filterDate(beforeStart, beforeEnd);
+var afterCollection = filtered.filterDate(afterStart,afterEnd);
+
+var before = beforeCollection.mosaic().clip(geometry);
+var after = afterCollection.mosaic().clip(geometry);
+Map.addLayer(before, {min:-25,max:0}, 'Before Floods', false);
+Map.addLayer(after, {min:-25,max:0}, 'After Floods', false);
+print(before);
+
+print(after);
+
+//Reducing radar speckles using smoothing technique
+var smoothing_radius = 25;
+var before_filtered = before.focal_mean(smoothing_radius, 'square', 'meters');
+var after_filtered = after.focal_mean(smoothing_radius, 'square', 'meters');
+Map.addLayer(before_filtered, {min:-25,max:0},'Before Flood (Filtered)', false);
+Map.addLayer(after_filtered, {min:-25,max:0},'After Flood (Filtered)', false);
+
+
+//Calculating preliminary floodwater extent
+var difference = after_filtered.divide(before_filtered);
+var diff_threshold = 1.19; 
+var flooded_area = difference.gt(diff_threshold).rename('flood_water').selfMask();
+Map.addLayer(flooded_area, {min:0,max:1, palette: ['orange']}, 'Floodwater Extent', false);
+
+//Masking the perennial water
+var perennialWater = gsw.select('seasonality').gte(3).clip(geometry);
+var flooded_area = flooded_area.where(perennialWater,0).selfMask();
+Map.addLayer(perennialWater.selfMask(), {min:0, max:1, palette: ['Aqua']}, 'Perennial Water', false);
+
+//Masking areas greater than 0.05 percent slope
+//Khulna is a low-lying area, use the slope threshold based on the local geography
+var slope_threshold = 5;
+var terrain = ee.Algorithms.Terrain(hydrosheds); //Hydrosheds void-filled DEM used
+var slope = terrain.select('slope');
+var flooded_area = flooded_area.updateMask(slope.lt(slope_threshold));
+//Layer of the elevated area
+Map.addLayer(slope.gte(slope_threshold).selfMask(), {min:0, max:1, palette: ['Teal']}, 'Elevated Area', false);
+
+//Remove unclustered pixels
+//Clustered pixel threshold and connected pixel counts should be selected based on local contexts and knowledge
+var clustered_pix_threshold = 3; 
+var clustered = flooded_area.connectedPixelCount(15);
+var flooded_area = flooded_area.updateMask(clustered.gt(clustered_pix_threshold));
+//Layer of the final floodwater extent
+Map.addLayer(flooded_area, {min:0,max:1, palette: ['Red']}, 'Final Floodwater extent', false);
+print(flooded_area);
+
+//Calculate total flooded area (in Hectares) of Khulna District after Cyclone Amphan
+var stats = flooded_area.multiply(ee.Image.pixelArea()).reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: geometry,
+  scale: 30,
+  maxPixels: 1e10});
+var floodedArea = ee.Number(stats.get('flood_water')).divide(10000);
+print('Total Flooded Area in kermanshah (Ha)',floodedArea);
+
+Export.image.toDrive({
+  image: after_filtered,
+  description: 'GFSAD1000',
+  scale: 10,
+  region: geometry,
+  maxPixels: 1e13,
+  crs: 'EPSG:3857'
+});
+
+Export.image.toDrive({
+  image: before_filtered,
+  description: 'beforflood',
+  scale: 10,
+  region: geometry,
+  maxPixels: 1e13,
+  crs: 'EPSG:3857'
+});
+
+Export.image.toDrive({
+  image: flooded_area,
+  description: 'flooded_area',
+  scale: 10,
+  region: geometry,
+  maxPixels: 1e13,
+  crs: 'EPSG:3857'
+});
